@@ -17,5 +17,8 @@ test('hosted deployment answers only its own HTTPS hostnames with a stable token
   assert.equal((await call('/api/turn',{...headers,Origin:'https://pulse.example'},body('/workout'))).status,200);
   assert.equal((await call('/api/turn',{...headers,Origin:'http://pulse.example'},body('/workout'))).status,403);
   assert.equal((await call('/api/turn',{...headers,Origin:'https://pulse.example'},{...body('/workout'),provider:'openai-api',consent:true})).status,403);
+  assert.equal((await call('/',{Host:'pulse.example','Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'navigate'})).status,200);
+  assert.equal((await call('/api/turn',{...headers,Origin:'https://pulse.example','Sec-Fetch-Site':'cross-site'},body('/workout'))).status,403);
+  assert.equal((await call('/api/turn',{...headers,Origin:'https://evil.example'},body('/workout'))).status,403);
  }finally{await new Promise(r=>server.close(r));}
 });

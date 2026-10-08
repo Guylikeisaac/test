@@ -30,17 +30,21 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw new PublicError('INPUT', 'Send valid JSON.', 400); }
 }
-/** A hosted, Mock-only deployment: the HTTPS hostnames it answers on and a token shared by all its instances. */
-export type PublicDeployment = { hosts: string[]; token: string };
+/** A hosted, Mock-only deployment: the HTTPS hostnames it answers on ('*' when the platform already routes
+ *  only this project's domains here) and a token shared by all its instances. */
+export type PublicDeployment = { hosts: string[] | '*'; token: string };
 export function createHandler(config: Config, transport: typeof fetch = fetch, cliTransport?: ProcessTransport, cliResolver?: (path: string) => Promise<string>, localPort: () => number | undefined = () => undefined, deployment?: PublicDeployment) {
   const token = deployment?.token ?? randomBytes(32).toString('hex');
   let active = 0;
   return async (req: IncomingMessage, res: ServerResponse) => {
-    const port = localPort();
+    const port = localPort(), host = req.headers.host ?? '';
     const local = port ? [`127.0.0.1:${port}`, `localhost:${port}`] : [];
-    const hosts = [...local, ...(deployment?.hosts ?? [])];
-    const origins = [...local.map(host => `http://${host}`), ...(deployment?.hosts ?? []).map(host => `https://${host}`)];
-    if (!hosts.includes(req.headers.host ?? '') || (req.headers.origin && !origins.includes(req.headers.origin)) || req.headers['sec-fetch-site'] === 'cross-site') {
+    const isLocal = local.includes(host);
+    const hosted = !isLocal && !!deployment && !!host && (deployment.hosts === '*' || deployment.hosts.includes(host));
+    const origins = isLocal ? local.map(h => `http://${h}`) : [`https://${host}`];
+    // Locally every cross-site request is refused; a hosted page may be opened from a link, but its API may not.
+    const crossSite = req.headers['sec-fetch-site'] === 'cross-site' && (isLocal || (req.url ?? '').startsWith('/api/'));
+    if ((!isLocal && !hosted) || (req.headers.origin && !origins.includes(req.headers.origin)) || crossSite) {
       json(res, 403, { error: 'Only this local app may make requests.' }); return;
     }
     try {

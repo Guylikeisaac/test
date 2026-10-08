@@ -7,9 +7,9 @@ import { createHandler, readConfig } from '../dist/server/app.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const env = process.env;
-const hosts = [env.VERCEL_URL, env.VERCEL_BRANCH_URL, env.VERCEL_PROJECT_PRODUCTION_URL, ...(env.PUBLIC_HOSTS ?? '').split(',')]
-  .map(host => host?.trim()).filter(Boolean);
+// Vercel only routes this project's own domains (and aliases) to the function, so any routed host is accepted;
+// requests must still come from that same https origin.
 // One token per deployment, identical across serverless instances (it is handed to any same-origin page anyway).
 const token = createHash('sha256').update('aira-pulse:' + (env.VERCEL_DEPLOYMENT_ID ?? env.VERCEL_URL ?? 'local')).digest('hex');
 
-export default createHandler(readConfig({}, root), fetch, undefined, undefined, () => undefined, { hosts: [...new Set(hosts)], token });
+export default createHandler(readConfig({}, root), fetch, undefined, undefined, () => undefined, { hosts: '*', token });
