@@ -6,14 +6,14 @@ import { createRunNav } from '../shared/openui/run-nav.js';
 import { splitReply } from '../shared/openui/document.js';
 import type { StatementNode } from '../shared/openui/openui-model.js';
 import { redactValue } from '../shared/redact.js';
-import { renderComponent } from './components.js';
+import { motion, renderComponent } from './components.js';
 import { byId,el } from './dom.js';
 import { withIcon } from './icons.js';
 const setLabel=(id:string,text:string)=>{byId(id).querySelector('.label')!.textContent=text;};
 const clockTime=(iso:string)=>new Date(iso).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
 
 type Config={providers:ProviderStatus[];token:string};let config:Config|undefined;
-const timers=new TimerLedger();let previousTimers=new Map<string,TimerListEntry>(),updates:(()=>void)[]=[],paused=false,pausedTimers:string[]=[],renderKey='',lastClear=0,lastIndex=-1;
+const timers=new TimerLedger();let previousTimers=new Map<string,TimerListEntry>(),updates:(()=>void)[]=[],paused=false,pausedTimers:string[]=[],renderKey='',lastClear=0,lastIndex=-1,seenEvents=0,lastCue='',lastProps=new Map<string,string>();
 const draft=byId<HTMLTextAreaElement>('message');
 const c=new Conversation(async(request:RequestData,signal:AbortSignal):Promise<Result>=>{
   const controller=new AbortController(),abort=()=>controller.abort();signal.addEventListener('abort',abort,{once:true});const timeout=setTimeout(abort,request.provider==='claude-cli'?85000:48000);
@@ -40,21 +40,29 @@ function timerAction(id:string,action:'start'|'pause'|'reset'|'finish'){
 function render(){
   if(config){const selected=config.providers.find(p=>p.id===c.provider)!;byId('mode').textContent=c.provider==='mock'?'MOCK · NO MODEL CALLS':selected.enabled?'LIVE WHEN SENT':'SETUP / BLOCKED';byId('mode').dataset.state=c.provider==='mock'?'mock':selected.enabled?'live':'blocked';byId('provider-description').textContent=selected.message;byId('consent-wrap').hidden=c.provider==='mock'||!selected.enabled;byId('consent-label').textContent=c.provider==='claude-cli'?'Use my subscription quota on Send/Retry; I reviewed the host-policy limits.':'Use my API budget on Send/Retry.';byId<HTMLInputElement>('consent').checked=c.consent;byId<HTMLButtonElement>('send').disabled=!selected.enabled||(c.provider!=='mock'&&!c.consent)||paused;byId('mock-controls').hidden=c.provider!=='mock';byId('sample').hidden=c.provider!=='mock';byId('demo-session').hidden=c.provider!=='mock';byId<HTMLButtonElement>('demo-session').disabled=paused;}
   setLabel('send',c.pending?'Send update':'Send');byId<HTMLButtonElement>('cancel').disabled=!c.pending;byId('pending').hidden=!c.pending;byId('status').textContent=c.pending?'Thinking… type an update to interrupt':c.error?'Needs attention':'Ready when you are';byId('error').hidden=!c.error;byId('error-message').textContent=c.error;
-  const transcript=byId('transcript');transcript.replaceChildren();if(!c.events.length){const n=el('div','','message assistant intro-line');n.append(el('span','Coach','who'),el('p','Tell me how much simulated time you’ve got — or start the demo session and I’ll run it.'));transcript.append(n);}
-  for(const event of c.events){if(event.kind==='input'||event.kind==='response'){const n=el('div','','message '+(event.kind==='input'?'user':'assistant'));n.append(el('span',event.kind==='input'?'You':'Coach','who'),el('p',event.text??splitReply(event.result!.turn.reply).prose??''));transcript.append(n);}else if(event.text){const n=el('p','','event');n.append(el('time',clockTime(event.at)),document.createTextNode(event.text));transcript.append(n);}else if(event.kind==='interrupted'||event.kind==='cancelled')transcript.append(el('p',event.kind==='interrupted'?'Previous reply interrupted. Your messages are kept.':'Reply cancelled.','event'));}
+  const transcript=byId('transcript');transcript.replaceChildren();if(c.events.length<seenEvents)seenEvents=0;const fresh=(i:number)=>i>=seenEvents?' new':'';
+  if(!c.events.length){const n=el('div','','message assistant intro-line new');n.append(el('span','Coach','who'),el('p','Tell me how much simulated time you’ve got — or start the demo session and I’ll run it.'));transcript.append(n);}
+  for(const [i,event] of c.events.entries()){if(event.kind==='input'||event.kind==='response'){const n=el('div','','message '+(event.kind==='input'?'user':'assistant')+fresh(i));n.append(el('span',event.kind==='input'?'You':'Coach','who'),el('p',event.text??splitReply(event.result!.turn.reply).prose??''));transcript.append(n);}else if(event.text){const n=el('p','','event'+fresh(i));n.append(el('time',clockTime(event.at)),document.createTextNode(event.text));transcript.append(n);}else if(event.kind==='interrupted'||event.kind==='cancelled')transcript.append(el('p',event.kind==='interrupted'?'Previous reply interrupted. Your messages are kept.':'Reply cancelled.','event'+fresh(i)));}
+  seenEvents=c.events.length;
+  if(c.pending){const n=el('div','','message assistant typing new'),dots=el('p','','dots');dots.setAttribute('aria-label','Coach is typing');for(let i=0;i<3;i++)dots.append(el('span'));n.append(el('span','Coach','who'),dots);transcript.append(n);}
   transcript.scrollTop=transcript.scrollHeight;syncTimers();
   const screens=c.document.screens,index=screens.findIndex(s=>s.key===c.document.cursor),key=c.document.echo()+String(paused)+c.provider;
   if(key!==renderKey || !byId('screen').childNodes.length){renderKey=key;updates=[];const surface=byId('screen');surface.replaceChildren();const current=c.document.current;
-    surface.classList.remove('enter','enter-back');if(current&&index!==lastIndex){void surface.offsetWidth;surface.classList.add(index<lastIndex?'enter-back':'enter');}lastIndex=index;
+    const entering=!!current&&index!==lastIndex,frame=surface.parentElement!;surface.classList.remove('enter','enter-back');frame.classList.remove('finale');if(entering){void surface.offsetWidth;surface.classList.add(index<lastIndex?'enter-back':'enter');if(index===screens.length-1&&screens.length>1&&index>lastIndex)frame.classList.add('finale');}lastIndex=index;
     if(!current){const n=el('div','','empty'),lanes=el('ol','','lanes');lanes.setAttribute('aria-label','Typical session shape');for(const [i,name] of ['Brief','Round','Round','Recover','Debrief'].entries()){const li=el('li');li.append(el('b',String(i+1).padStart(2,'0')),el('span',name));lanes.append(li);}
       n.append(el('p','No session loaded','kicker'),el('h3','Your workout starts here.'),el('p',c.provider==='mock'?'Five screens, three simulated clocks, one coach. Nothing to lift — you just steer.':'Tell your coach how much simulated time you have and what kind of session you want.','empty-copy'),lanes);
       if(c.provider==='mock'){const go=el('button','Start demo session','primary cta');go.type='button';go.disabled=paused;go.addEventListener('click',()=>send('/workout'));n.append(withIcon(go,'play'));}surface.append(n);}
-    else for(const node of current.props.children as StatementNode[])if(node.name!=='Cue')surface.append(renderComponent(node,{send,timers,timerAction,updates,paused}));
-    const progress=byId('progress');progress.replaceChildren();if(screens.length>1)for(let i=0;i<screens.length;i++){const n=el('span','',''+(i===index?'active':i<index?'past':''));n.setAttribute('aria-label',`Screen ${i+1}${i===index?', current':''}`);progress.append(n);}
+    else{const props=new Map<string,string>();let i=0;for(const node of current.props.children as StatementNode[]){if(node.name==='Cue')continue;
+      const n=renderComponent(node,{send,timers,timerAction,updates,paused,entering}),sig=JSON.stringify(node.props);n.style.setProperty('--i',String(i++));props.set(node.key,sig);
+      // A patch on the screen already in view (e.g. "Make it lighter") flashes only the statements it changed.
+      if(!entering&&lastProps.size&&lastProps.get(node.key)!==sig&&motion())n.classList.add('updated');surface.append(n);}
+      lastProps=props;}
+    if(!current)lastProps=new Map();
+    const progress=byId('progress');progress.replaceChildren();progress.classList.toggle('enter',entering);if(screens.length>1)for(let i=0;i<screens.length;i++){const n=el('span','',''+(i===index?'active':i<index?'past':''));n.setAttribute('aria-label',`Screen ${i+1}${i===index?', current':''}`);progress.append(n);}
   }
   byId('navigation').hidden=screens.length<2;byId('position').hidden=screens.length<2;byId('position').textContent=`${index+1} / ${screens.length}`;byId<HTMLButtonElement>('back').disabled=paused||index<=0;byId<HTMLButtonElement>('next').disabled=paused;setLabel('next',index===screens.length-1?'Finish preview':'Next');
   byId<HTMLButtonElement>('pause').disabled=!screens.length;setLabel('pause',paused?'Resume preview':'Pause preview');byId('paused').hidden=!paused;
-  const cues=(c.document.current?.props.children as StatementNode[]??[]).filter(n=>n.name==='Cue').map(n=>String(n.props.text));byId('spoken').textContent=cues.join(' ')||c.document.prose||'Current-screen Cues appear here as text. No audio is produced.';
+  const cues=(c.document.current?.props.children as StatementNode[]??[]).filter(n=>n.name==='Cue').map(n=>String(n.props.text));const cue=cues.join(' ')||c.document.prose||'Current-screen Cues appear here as text. No audio is produced.',spoken=byId('spoken');spoken.textContent=cue;if(cue!==lastCue){lastCue=cue;spoken.classList.remove('cue-in');void spoken.offsetWidth;spoken.classList.add('cue-in');}
   byId('state-json').textContent=JSON.stringify({ui_state:c.document.echo(),client_events:c.clientEvents,timers:timers.list()},null,2);byId<HTMLButtonElement>('export').disabled=c.pending||!c.events.length;
 }
 byId<HTMLFormElement>('composer').addEventListener('submit',event=>{event.preventDefault();const text=draft.value.trim();if(text){draft.value='';send(text);}});
