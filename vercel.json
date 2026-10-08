@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm ci --ignore-scripts",
+  "buildCommand": "npm run build && mkdir -p dist/public && printf 'User-agent: *\\nAllow: /\\n' > dist/public/robots.txt",
+  "outputDirectory": "dist/public",
+  "functions": {
+    "api/index.mjs": { "includeFiles": "{dist/web/**,dist/shared/**,examples/**,prompts/**,skills/**}", "maxDuration": 30 }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}

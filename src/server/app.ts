@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile, realpath } from 'node:fs/promises';
 import { join, resolve, extname, sep } from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -30,14 +30,17 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw new PublicError('INPUT', 'Send valid JSON.', 400); }
 }
-export function createApp(config: Config, transport: typeof fetch = fetch, cliTransport?: ProcessTransport, cliResolver?: (path: string) => Promise<string>) {
-  const token = randomBytes(32).toString('hex');
+/** A hosted, Mock-only deployment: the HTTPS hostnames it answers on and a token shared by all its instances. */
+export type PublicDeployment = { hosts: string[]; token: string };
+export function createHandler(config: Config, transport: typeof fetch = fetch, cliTransport?: ProcessTransport, cliResolver?: (path: string) => Promise<string>, localPort: () => number | undefined = () => undefined, deployment?: PublicDeployment) {
+  const token = deployment?.token ?? randomBytes(32).toString('hex');
   let active = 0;
-  const server = createServer(async (req, res) => {
-    const address = server.address();
-    const port = typeof address === 'object' && address ? address.port : 4319;
-    const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
-    if (!hosts.includes(req.headers.host ?? '') || (req.headers.origin && !hosts.some(host => req.headers.origin === `http://${host}`)) || req.headers['sec-fetch-site'] === 'cross-site') {
+  return async (req: IncomingMessage, res: ServerResponse) => {
+    const port = localPort();
+    const local = port ? [`127.0.0.1:${port}`, `localhost:${port}`] : [];
+    const hosts = [...local, ...(deployment?.hosts ?? [])];
+    const origins = [...local.map(host => `http://${host}`), ...(deployment?.hosts ?? []).map(host => `https://${host}`)];
+    if (!hosts.includes(req.headers.host ?? '') || (req.headers.origin && !origins.includes(req.headers.origin)) || req.headers['sec-fetch-site'] === 'cross-site') {
       json(res, 403, { error: 'Only this local app may make requests.' }); return;
     }
     try {
@@ -103,7 +106,13 @@ export function createApp(config: Config, transport: typeof fetch = fetch, cliTr
       else if (error instanceof Error && 'code' in error && error.code === 'ENOENT') json(res, 404, { error: 'Required local file was not found. Rebuild and check the skill file.' });
       else json(res, 500, { error: 'The local request failed. Check your skill file or restart the server.' });
     }
-  });
+  };
+}
+export function createApp(config: Config, transport: typeof fetch = fetch, cliTransport?: ProcessTransport, cliResolver?: (path: string) => Promise<string>) {
+  const server: Server = createServer(createHandler(config, transport, cliTransport, cliResolver, (): number => {
+    const address = server.address();
+    return typeof address === 'object' && address ? address.port : 4319;
+  }));
   server.requestTimeout = 10_000;
   server.headersTimeout = 10_000;
   return server;
